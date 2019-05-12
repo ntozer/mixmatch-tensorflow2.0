@@ -2,6 +2,8 @@ import argparse
 
 import tensorflow as tf
 
+from preprocess import load_data
+
 
 def get_args():
     parser = argparse.ArgumentParser('parameters')
@@ -17,6 +19,7 @@ def get_args():
 
 def main():
     args = get_args()
+    train, test = load_data(args)
     print(args)
 
 
