@@ -43,6 +43,15 @@ def main():
         args = load_config(args)
 
     trainX, trainU, test = load_data(args)
+
+    datasetX = tf.data.Dataset.from_tensor_slices(trainX)
+    datasetU = tf.data.Dataset.from_tensor_slices(trainU)
+    datasetX = datasetX.repeat(args['epochs']).batch(args['batch_size'] // 2)
+    datasetU = datasetU.repeat(args['epochs']).batch(args['batch_size'] // 2)
+
+    for batchX, batchU in zip(datasetX, datasetU):
+        pass
+
     print(args)
 
 

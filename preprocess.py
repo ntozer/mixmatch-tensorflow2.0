@@ -71,13 +71,15 @@ def generate_labelled_and_unlabelled_datasets(args, dataset):
     for key in dataset.keys():
         labelled[key] = dataset[key][:args['labelled_examples']]
         unlabelled[key] = dataset[key][args['labelled_examples']:]
+    for key in dataset.keys():
+        labelled[key] = np.resize(dataset[key], unlabelled[key].shape)
     unlabelled['label'] = np.zeros(shape=unlabelled['label'].shape)
     return labelled, unlabelled
 
 
 def unison_shuffle(args, dataset):
     assert len(set([len(dataset[key]) for key in dataset.keys()])) == 1
-    np.random.seed(args['seed'] if 'seed' in args.keys() else None)
+    np.random.seed(args['seed'])
     p = np.random.permutation(len(dataset[list(dataset.keys())[0]]))
     for key in dataset.keys():
         dataset[key] = dataset[key][p]
