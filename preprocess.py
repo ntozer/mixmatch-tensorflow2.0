@@ -37,7 +37,7 @@ def load_data(args):
     test = convert_to_one_hot(test, num_labels)
     trainX, trainU = generate_labelled_and_unlabelled_datasets(args, train)
 
-    return trainX, trainU, test
+    return trainX, trainU, test, num_labels
 
 
 def convert_to_numpy(dataset):
@@ -52,14 +52,13 @@ def convert_to_numpy(dataset):
     np_dataset = {}
     for key in examples.keys():
         np_dataset[key] = np.stack(examples[key])
-        # if key == 'label':
-        #     np_dataset[key] = np.expand_dims(np_dataset[key], axis=1)
+        np_dataset[key] = np_dataset[key].astype(dtype=np.float)
     return np_dataset
 
 
 def convert_to_one_hot(dataset, num_labels):
     one_hot = np.zeros(shape=[len(dataset['label']), num_labels])
-    one_hot[np.arange(len(dataset['label'])), dataset['label']] = 1
+    one_hot[np.arange(len(dataset['label'])), dataset['label'].astype(np.int)] = 1
     dataset['label'] = one_hot
     return dataset
 
@@ -71,8 +70,6 @@ def generate_labelled_and_unlabelled_datasets(args, dataset):
     for key in dataset.keys():
         labelled[key] = dataset[key][:args['labelled_examples']]
         unlabelled[key] = dataset[key][args['labelled_examples']:]
-    for key in dataset.keys():
-        labelled[key] = np.resize(dataset[key], unlabelled[key].shape)
     unlabelled['label'] = np.zeros(shape=unlabelled['label'].shape)
     return labelled, unlabelled
 
