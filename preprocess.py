@@ -52,7 +52,7 @@ def convert_to_numpy(dataset):
     np_dataset = {}
     for key in examples.keys():
         np_dataset[key] = np.stack(examples[key])
-        np_dataset[key] = np_dataset[key].astype(dtype=np.float)
+        np_dataset[key] = np_dataset[key]
     return np_dataset
 
 

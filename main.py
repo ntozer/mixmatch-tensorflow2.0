@@ -4,6 +4,7 @@ import os
 import tensorflow as tf
 import yaml
 
+from mixmatch import mixmatch
 from model import WideResNet
 from preprocess import load_data
 
@@ -51,7 +52,7 @@ def main():
     trainX, trainU, test, num_classes = load_data(args)
 
     datasetX = tf.data.Dataset.from_tensor_slices(trainX)
-    datasetU = tf.data.Dataset.from_tensor_slices(trainU)
+    datasetU = tf.data.Dataset.from_tensor_slices(trainU).shuffle(buffer_size=int(1e6), reshuffle_each_iteration=True)
     datasetX = datasetX.batch(args['batch_size'] // 2, drop_remainder=True)
     datasetU = datasetU.batch(args['batch_size'] // 2, drop_remainder=True)
 
@@ -70,19 +71,20 @@ def main():
 
     optimizer = tf.keras.optimizers.Adam(lr=args['learning_rate'])
     for epoch in range(args['epochs']):
-        optimizer.lr = optimizer.lr * 0.8**(3 if epoch >= 160 else 2 if epoch >= 120 else 1 if epoch >= 60 else 0)
+        optimizer.lr = optimizer.lr * 0.8**(3 if epoch >= 120 else 2 if epoch >= 60 else 1 if epoch >= 30 else 0)
 
         epoch_loss_avg = tf.keras.metrics.Mean()
         epoch_accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
 
-        # for batchX, batchU in zip(datasetX, datasetU):
-        for batchX in datasetX:
-            loss_value, grads = grad(model, batchX['image'], batchX['label'])
-            loss_value = tf.where(tf.logical_or(tf.math.is_nan(loss_value), tf.greater(loss_value, 100.)), 100., loss_value)
+        for batchX, batchU in zip(datasetX, datasetU):
+            X, y, U, q = mixmatch(batchX['image'], batchU['image'], batchX['label'], model)
+
+            loss_value, grads = grad(model, X, y)
+            # loss_value = tf.where(tf.logical_or(tf.math.is_nan(loss_value), tf.greater(loss_value, 100.)), 100., loss_value)
             optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
             epoch_loss_avg(loss_value)
-            epoch_accuracy(tf.argmax(batchX['label'], axis=1), model(batchX['image']))
+            epoch_accuracy(tf.argmax(y, axis=1), model(X))
 
         if epoch % 1 == 0:
             print(f'Epoch {epoch:03d}: Loss: {epoch_loss_avg.result():.3f}, Accuracy: {epoch_accuracy.result():.3%}')
