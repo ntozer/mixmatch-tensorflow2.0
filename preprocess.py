@@ -33,8 +33,12 @@ def load_data(args):
         test = convert_to_numpy(dataset['test'])
         num_labels = 100
 
+    train = change_range(train, start=(0., 255.), end=(0., 1.))
+    test = change_range(test, start=(0., 255.), end=(0., 1.))
     train = convert_to_one_hot(train, num_labels)
     test = convert_to_one_hot(test, num_labels)
+    for key in test.keys():
+        test[key] = test[key].astype(dtype=np.float32)
     trainX, trainU = generate_labelled_and_unlabelled_datasets(args, train)
 
     return trainX, trainU, test, num_labels
@@ -54,6 +58,12 @@ def convert_to_numpy(dataset):
         np_dataset[key] = np.stack(examples[key])
         np_dataset[key] = np_dataset[key]
     return np_dataset
+
+
+def change_range(dataset, start=(0., 255.), end=(0., 1.)):
+    dataset['image'] = (dataset['image'] - start[0]) / (start[1] - start[0])
+    dataset['image'] = dataset['image'] * (end[1] - end[0]) + start[0]
+    return dataset
 
 
 def convert_to_one_hot(dataset, num_labels):

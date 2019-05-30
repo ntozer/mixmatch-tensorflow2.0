@@ -37,11 +37,13 @@ class WideResNetBlock(tf.keras.layers.Layer):
 class WideResNet(tf.keras.Model):
     def __init__(self, num_classes, depth=28, width=2, input_shape=(None, 32, 32, 3), **kwargs):
         super(WideResNet, self).__init__(input_shape, **kwargs)
+        assert (depth - 4) % 6 == 0
+        N = int((depth - 4) / 6)
         self.groups = [
             [tf.keras.layers.Conv2D(16, (3, 3), (1, 1), padding='same')],
-            [WideResNetBlock(num, 16 * width, (3, 3), (1, 1)) for num in range(depth)],
-            [WideResNetBlock(num, 32 * width, (3, 3), (2, 1) if num == 0 else (1, 1)) for num in range(depth)],
-            [WideResNetBlock(num, 64 * width, (3, 3), (2, 1) if num == 0 else (1, 1)) for num in range(depth)]
+            [WideResNetBlock(num, 16 * width, (3, 3), (1, 1)) for num in range(N)],
+            [WideResNetBlock(num, 32 * width, (3, 3), (2, 1) if num == 0 else (1, 1)) for num in range(N)],
+            [WideResNetBlock(num, 64 * width, (3, 3), (2, 1) if num == 0 else (1, 1)) for num in range(N)]
         ]
         self.avg_pool = tf.keras.layers.AveragePooling2D((8, 8), (1, 1))
         self.flatten = tf.keras.layers.Flatten()
