@@ -1,59 +1,73 @@
 import tensorflow as tf
 
 
-class WideResNetBlock(tf.keras.layers.Layer):
-    def __init__(self, block_id, filters, kernel=(3, 3), strides=(1, 1), **kwargs):
-        super(WideResNetBlock, self).__init__(**kwargs)
-        self.filters = filters
-        self.strides = [(val, val) for val in strides]
-        self.bn_0 = tf.keras.layers.BatchNormalization()
-        self.conv2d_0 = tf.keras.layers.Conv2D(filters, kernel, self.strides[0], padding='same')
-        self.bn_1 = tf.keras.layers.BatchNormalization()
-        self.conv2d_1 = tf.keras.layers.Conv2D(filters, kernel, self.strides[1], padding='same')
-        self.downsample = None
-        if block_id == 0:
-            self.downsample = {
-                'conv2d': tf.keras.layers.Conv2D(self.filters, (1, 1), self.strides[0], padding='same'),
-                'max-pool': tf.keras.layers.MaxPooling2D((2, 2), (2, 2), padding='same')
-            }
+class Residual3x3Unit(tf.keras.layers.Layer):
+    def __init__(self, channels_in, channels_out, stride, droprate=0., activate_before_residual=False):
+        super(Residual3x3Unit, self).__init__()
+        self.bn_0 = tf.keras.layers.BatchNormalization(momentum=0.999)
+        self.relu_0 = lambda x: tf.nn.leaky_relu(x, alpha=0.1)
+        self.conv_0 = tf.keras.layers.Conv2D(channels_out, kernel_size=3, strides=stride, padding='same', use_bias=False)
+        self.bn_1 = tf.keras.layers.BatchNormalization(momentum=0.999)
+        self.relu_1 = lambda x: tf.nn.leaky_relu(x, alpha=0.1)
+        self.conv_1 = tf.keras.layers.Conv2D(channels_out, kernel_size=3, strides=1, padding='same', use_bias=False)
+        self.downsample = channels_in != channels_out
+        self.shortcut = tf.keras.layers.Conv2D(channels_out, kernel_size=1, strides=stride, use_bias=False)
+        self.activate_before_residual = activate_before_residual
+        self.droprate = droprate
 
-    def call(self, inputs, **kwargs):
-        shortcut = inputs
-        x = self.bn_0(tf.cast(inputs, tf.float32))
-        x = tf.keras.activations.relu(x)
-        if self.downsample is not None:
-            if self.filters == inputs.shape[-1]:
-                if self.strides[0] == (2, 2):
-                    shortcut = self.downsample['max-pool'](x)
-            else:
-                shortcut = self.downsample['conv2d'](x)
-        x = self.conv2d_0(x)
-        x = self.bn_1(tf.cast(x, tf.float32))
-        x = tf.keras.activations.relu(x)
-        x = self.conv2d_1(x)
-        return x + shortcut
+    def call(self, x, **kwargs):
+        if self.downsample and self.activate_before_residual:
+            x = self.relu_0(self.bn_0(x))
+        elif not self.downsample:
+            out = self.relu_0(self.bn_0(x))
+        out = self.relu_1(self.bn_1(self.conv_0(x if self.downsample else out)))
+        if self.droprate > 0.:
+            out = tf.nn.dropout(out, rate=self.droprate)
+        out = self.conv_1(out)
+        return out + (self.shortcut(x) if self.downsample else x)
+
+
+class ResidualBlock(tf.keras.layers.Layer):
+    def __init__(self, n_units, channels_in, channels_out, unit, stride, droprate=0., activate_before_residual=False):
+        super(ResidualBlock, self).__init__()
+        self.units = self._build_unit(n_units, unit, channels_in, channels_out, stride, droprate, activate_before_residual)
+
+    def _build_unit(self, n_units, unit, channels_in, channels_out, stride, droprate, activate_before_residual):
+        units = []
+        for i in range(n_units):
+            units.append(unit(channels_in if i == 0 else channels_out, channels_out, stride if i == 0 else 1, droprate, activate_before_residual))
+        return units
+
+    def call(self, x, **kwargs):
+        for unit in self.units:
+            x = unit(x)
+        return x
 
 
 class WideResNet(tf.keras.Model):
-    def __init__(self, num_classes, depth=28, width=2, input_shape=(None, 32, 32, 3), **kwargs):
+    def __init__(self, num_classes, depth=28, width=2, droprate=0., input_shape=(None, 32, 32, 3), **kwargs):
         super(WideResNet, self).__init__(input_shape, **kwargs)
         assert (depth - 4) % 6 == 0
         N = int((depth - 4) / 6)
-        self.groups = [
-            [tf.keras.layers.Conv2D(16, (3, 3), (1, 1), padding='same')],
-            [WideResNetBlock(num, 16 * width, (3, 3), (1, 1)) for num in range(N)],
-            [WideResNetBlock(num, 32 * width, (3, 3), (2, 1) if num == 0 else (1, 1)) for num in range(N)],
-            [WideResNetBlock(num, 64 * width, (3, 3), (2, 1) if num == 0 else (1, 1)) for num in range(N)]
-        ]
+        channels = [16, 16 * width, 32 * width, 64 * width]
+
+        self.conv_0 = tf.keras.layers.Conv2D(channels[0], kernel_size=3, strides=1, padding='same', use_bias=False)
+        self.block_0 = ResidualBlock(N, channels[0], channels[1], Residual3x3Unit, 1, droprate, True)
+        self.block_1 = ResidualBlock(N, channels[1], channels[2], Residual3x3Unit, 2, droprate)
+        self.block_2 = ResidualBlock(N, channels[2], channels[3], Residual3x3Unit, 2, droprate)
+        self.bn_0 = tf.keras.layers.BatchNormalization(momentum=0.999)
+        self.relu_0 = lambda x: tf.nn.leaky_relu(x, alpha=0.1)
         self.avg_pool = tf.keras.layers.AveragePooling2D((8, 8), (1, 1))
         self.flatten = tf.keras.layers.Flatten()
         self.dense = tf.keras.layers.Dense(num_classes)
 
     def call(self, inputs, **kwargs):
         x = inputs
-        for group in self.groups:
-            for block in group:
-                x = block(x)
+        x = self.conv_0(x)
+        x = self.block_0(x)
+        x = self.block_1(x)
+        x = self.block_2(x)
+        x = self.relu_0(self.bn_0(x))
         x = self.avg_pool(x)
         x = self.flatten(x)
         x = self.dense(x)
