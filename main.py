@@ -4,7 +4,7 @@ import os
 import tensorflow as tf
 import yaml
 
-from mixmatch import mixmatch, semi_loss
+from mixmatch import mixmatch, grad, linear_rampup
 from model import WideResNet
 from preprocess import load_data
 
@@ -28,7 +28,9 @@ def get_args():
     parser.add_argument('--K', type=int, default=2, help='number of rounds of augmentation (default: 2)')
     parser.add_argument('--alpha', type=float, default=0.75,
                         help='param for sampling from Beta distribution (default: 0.75)')
-    parser.add_argument('--lambdaU', type=int, default=100, help='multiplier for unlabelled loss (default: 100)')
+    parser.add_argument('--lambda-u', type=int, default=100, help='multiplier for unlabelled loss (default: 100)')
+    parser.add_argument('--rampup-length', type=int, default=16,
+                        help='rampup length for unlabelled loss multiplier (default: 16)')
     parser.add_argument('--decay-rate', type=float, default=0., help='decay rate for learning rate (default: 0.)')
 
     parser.add_argument('--config-path', type=str, default=None, help='path to yaml config file, overwrites args')
@@ -54,35 +56,33 @@ def main():
 
     datasetX = tf.data.Dataset.from_tensor_slices(trainX)
     datasetU = tf.data.Dataset.from_tensor_slices(trainU)
-    batchedX = datasetX.batch(args['batch_size'] // 2, drop_remainder=True)
+    batchedX = datasetX.batch(args['batch_size'], drop_remainder=True)
     model = WideResNet(num_classes, depth=28, width=2)
 
-    def grad(model, X, y, U, q, mse_weight):
-        with tf.GradientTape() as tape:
-            loss_value = semi_loss(X, y, U, q, model, mse_weight)
-        return loss_value, tape.gradient(loss_value, model.trainable_variables)
-
     optimizer = tf.keras.optimizers.Adam(lr=args['learning_rate'])
+
     for epoch in range(args['epochs']):
-        optimizer.lr = optimizer.lr * (1 - args['decay_rate'])**(epoch / args['epochs'])
+        # optimizer.lr = optimizer.lr * (1 - args['decay_rate'])**(epoch / args['epochs'])
 
         epoch_loss_avg = tf.keras.metrics.Mean()
         epoch_accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
 
-        batchedU = datasetU.shuffle(buffer_size=int(1e6)).batch(args['batch_size'] // 2, drop_remainder=True)
+        batchedU = datasetU.shuffle(buffer_size=int(1e6)).batch(args['batch_size'], drop_remainder=True)
 
         for batchX, batchU in zip(batchedX, batchedU):
-            X, y, U, q = mixmatch(batchX['image'], batchU['image'], batchX['label'], model)
+            # XU, XUy = mixmatch(model, batchX['image'], batchX['label'], batchU['image'])
 
-            loss_value, grads = grad(model, X, y, U, q, args['lambdaU'])
+            lambda_u = args['lambda_u'] * linear_rampup(epoch, args['rampup_length'])
+            loss_value, grads = grad(model, batchX['image'], batchX['label'], batchU['image'], lambda_u, args['batch_size'])
             optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
             epoch_loss_avg(loss_value)
             epoch_accuracy(tf.argmax(batchX['label'], axis=1, output_type=tf.int32), model(tf.cast(batchX['image'], dtype=tf.float32)))
 
-        if epoch % 10 == 0:
+        if epoch % 1 == 0:
             print(f'Epoch {epoch:04d}: Loss: {epoch_loss_avg.result():.3f}, Accuracy: {epoch_accuracy.result():.3%}')
 
+        if epoch % 25 == 0:
             test_accuracy = tf.keras.metrics.Accuracy()
             test_dataset = tf.data.Dataset.from_tensor_slices(test)
             test_dataset = test_dataset.batch(args['batch_size'])

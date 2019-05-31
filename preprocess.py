@@ -33,8 +33,8 @@ def load_data(args):
         test = convert_to_numpy(dataset['test'])
         num_labels = 100
 
-    train = change_range(train, start=(0., 255.), end=(0., 1.))
-    test = change_range(test, start=(0., 255.), end=(0., 1.))
+    # train = change_range(train, start=(0., 255.), end=(0., 1.))
+    # test = change_range(test, start=(0., 255.), end=(0., 1.))
     train = convert_to_one_hot(train, num_labels)
     test = convert_to_one_hot(test, num_labels)
     for key in test.keys():

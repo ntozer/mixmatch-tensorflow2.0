@@ -1,9 +1,10 @@
 dataset: 'cifar10'
 epochs: 10000
-batch_size: 250
+batch_size: 50
 learning_rate: 0.002
 labelled_examples: 250
 T: 0.5
 K: 2
 alpha: 0.75
-lambdaU: 75
+lambda_u: 75
+rampup_length: 400
