@@ -1,10 +1,11 @@
 dataset: 'cifar10'
-epochs: 10000
-batch_size: 50
+epochs: 8192
+val_iteration: 128
+batch_size: 64
 learning_rate: 0.002
 labelled_examples: 250
 T: 0.5
 K: 2
 alpha: 0.75
 lambda_u: 75
-rampup_length: 400
+rampup_length: 128
