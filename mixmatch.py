@@ -1,6 +1,5 @@
 import numpy as np
 import tensorflow as tf
-import tensorflow.keras.backend as K
 
 
 def augment_fn(x):
@@ -77,11 +76,12 @@ def mixmatch(model, x, y, u, T=0.5, K=2, alpha=0.75):
     return XU, XUy
 
 
-def semi_loss(labels_x, logits_x, labels_u, logits_u, lambda_u):
-    xe_loss = K.mean(-1 * K.sum(labels_x * tf.nn.log_softmax(logits_x), axis=1))
-    mse_loss = K.mean(K.square(labels_u - K.softmax(logits_u)))
-    semi_loss = xe_loss + lambda_u * mse_loss
-    return semi_loss
+def semi_loss(labels_x, logits_x, labels_u, logits_u):
+    loss_xe = tf.nn.softmax_cross_entropy_with_logits(labels=labels_x, logits=logits_x)
+    loss_xe = tf.reduce_mean(loss_xe)
+    loss_l2u = tf.square(labels_u - tf.nn.softmax(logits_u))
+    loss_l2u = tf.reduce_mean(loss_l2u)
+    return loss_xe, loss_l2u
 
 
 def linear_rampup(epoch, rampup_length=16):
@@ -92,14 +92,12 @@ def linear_rampup(epoch, rampup_length=16):
         return float(rampup)
 
 
-def grad(model, X, y, U, lambda_u, batch_size):
-    with tf.GradientTape() as tape:
-        XU, XUy = mixmatch(model, X, y, U, )
-        logits = [model(XU[0])]
-        for batch in XU[1:]:
-            logits.append(model(batch))
-        logits = interleave(logits, batch_size)
-        logits_x = logits[0]
-        logits_u = tf.concat(logits[1:], axis=0)
-        loss_value = semi_loss(XUy[:batch_size], logits_x, XUy[batch_size:], logits_u, lambda_u)
-        return loss_value, tape.gradient(loss_value, model.trainable_variables)
+def weight_decay(model, decay_rate):
+    for var in model.trainable_variables:
+        var.assign(var * (1 - decay_rate))
+
+
+def ema_decay(model, ema_model, decay_rate):
+    for var, ema_var in zip(model.trainable_variables, ema_model.trainable_variables):
+        tmp_var = var * (1 - decay_rate)
+        ema_var.assign(tmp_var + decay_rate * ema_var)
