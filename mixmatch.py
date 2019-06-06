@@ -1,20 +1,22 @@
+from multiprocessing import cpu_count
+
 import numpy as np
 import tensorflow as tf
 
 
-def augment_fn(x):
+def augment(x):
     # random left right flipping
     x = tf.image.random_flip_left_right(x)
     # random pad and crop
-    x = tf.pad(x, paddings=[(4, 4), (4, 4), (0, 0)])
-    x = tf.image.random_crop(x, size=(32, 32, 3))
+    x = tf.pad(x, paddings=[(0, 0), (4, 4), (4, 4), (0, 0)], mode='REFLECT')
+    x = tf.map_fn(lambda batch: tf.image.random_crop(batch, size=(32, 32, 3)), x, parallel_iterations=cpu_count())
     return x
 
 
 def guess_labels(u_aug, model, K):
-    u_logits = tf.nn.softmax(model(u_aug[0]))
+    u_logits = tf.nn.softmax(model(u_aug[0]), axis=1)
     for k in range(1, K):
-        u_logits = u_logits + tf.nn.softmax(model(u_aug[k]))
+        u_logits = u_logits + tf.nn.softmax(model(u_aug[k]), axis=1)
     u_logits = u_logits / K
     u_logits = tf.stop_gradient(u_logits)
     return u_logits
@@ -53,14 +55,11 @@ def interleave(xy, batch):
 
 
 def mixmatch(model, x, y, u, T=0.5, K=2, alpha=0.75):
-    x = tf.dtypes.cast(x, tf.float32)
-    u = tf.dtypes.cast(u, tf.float32)
-    y = tf.dtypes.cast(y, tf.float32)
     batch_size = x.shape[0]
-    x_aug = tf.map_fn(augment_fn, x)
+    x_aug = augment(x)
     u_aug = [None for _ in range(K)]
     for k in range(K):
-        u_aug[k] = tf.map_fn(augment_fn, u)
+        u_aug[k] = augment(u)
     mean_logits = guess_labels(u_aug, model, K)
     qb = sharpen(mean_logits, T)
     U = tf.concat(u_aug, axis=0)

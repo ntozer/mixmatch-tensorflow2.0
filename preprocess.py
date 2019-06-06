@@ -1,5 +1,4 @@
 import numpy as np
-import tensorflow as tf
 import tensorflow_datasets as tfds
 
 
@@ -33,14 +32,21 @@ def load_data(args):
         test = convert_to_numpy(dataset['test'])
         num_labels = 100
 
-    # train = change_range(train, start=(0., 255.), end=(0., 1.))
-    # test = change_range(test, start=(0., 255.), end=(0., 1.))
     train = convert_to_one_hot(train, num_labels)
     test = convert_to_one_hot(test, num_labels)
     for key in test.keys():
         test[key] = test[key].astype(dtype=np.float32)
-    trainX, trainU = generate_labelled_and_unlabelled_datasets(args, train)
-
+    trainX, trainU = generate_labelled_and_unlabelled_datasets(args, train, num_labels)
+    labelled_dist = []
+    for i in range(num_labels):
+        labelled_dist.append(len(np.where(trainX['label'][:, i] == 1)[0]))
+    print('Labelled Distribution:', labelled_dist)
+    for key in train.keys():
+        trainX[key] = trainX[key].astype(dtype=np.float32)
+        trainU[key] = trainU[key].astype(dtype=np.float32)
+    test = change_range(test)
+    trainX = change_range(trainX)
+    trainU = change_range(trainU)
     return trainX, trainU, test, num_labels
 
 
@@ -73,14 +79,22 @@ def convert_to_one_hot(dataset, num_labels):
     return dataset
 
 
-def generate_labelled_and_unlabelled_datasets(args, dataset):
+def generate_labelled_and_unlabelled_datasets(args, dataset, num_labels):
     dataset = unison_shuffle(args, dataset)
+    labelled_idxs = []
+    unlabelled_idxs = []
+    for i in range(num_labels):
+        idxs = np.where(dataset['label'][:, i] == 1)[0]
+        np.random.shuffle(idxs)
+        labelled_idxs.extend(idxs[:int(args['labelled_examples']/num_labels)])
+        unlabelled_idxs.extend(idxs[int(args['labelled_examples']/num_labels):])
+    np.random.shuffle(labelled_idxs)
+    np.random.shuffle(unlabelled_idxs)
     labelled = {}
     unlabelled = {}
     for key in dataset.keys():
-        labelled[key] = dataset[key][:args['labelled_examples']]
-        unlabelled[key] = dataset[key][args['labelled_examples']:]
-    unlabelled['label'] = np.zeros(shape=unlabelled['label'].shape)
+        labelled[key] = dataset[key][labelled_idxs]
+        unlabelled[key] = dataset[key][unlabelled_idxs]
     return labelled, unlabelled
 
 
