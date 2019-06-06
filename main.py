@@ -145,7 +145,7 @@ def train(datasetX, datasetU, model, ema_model, optimizer, epoch, args, writer):
         xe_loss_avg(xe_loss)
         l2u_loss_avg(l2u_loss)
         total_loss_avg(total_loss)
-        accuracy(tf.argmax(batchX['label'], axis=1, output_type=tf.int32), model.predict_on_batch(tf.cast(batchX['image'], dtype=tf.float32)))
+        accuracy(tf.argmax(batchX['label'], axis=1, output_type=tf.int32), model(tf.cast(batchX['image'], dtype=tf.float32), training=False))
 
     if writer is not None:
         step = args['val_iteration'] * (epoch + 1)
@@ -164,7 +164,7 @@ def validate(dataset, model, epoch, args):
 
     dataset = dataset.batch(args['batch_size'])
     for batch in dataset:
-        logits = model.predict_on_batch(batch['image'])
+        logits = model(batch['image'], training=False)
         xe_loss = tf.nn.softmax_cross_entropy_with_logits(labels=batch['label'], logits=logits)
         test_xe_avg(xe_loss)
         prediction = tf.argmax(logits, axis=1, output_type=tf.int32)

@@ -5,22 +5,22 @@ class Residual3x3Unit(tf.keras.layers.Layer):
     def __init__(self, channels_in, channels_out, stride, droprate=0., activate_before_residual=False):
         super(Residual3x3Unit, self).__init__()
         self.bn_0 = tf.keras.layers.BatchNormalization(momentum=0.999)
-        self.relu_0 = lambda x: tf.nn.leaky_relu(x, alpha=0.1)
+        self.relu_0 = tf.keras.layers.LeakyReLU(alpha=0.1)
         self.conv_0 = tf.keras.layers.Conv2D(channels_out, kernel_size=3, strides=stride, padding='same', use_bias=False)
         self.bn_1 = tf.keras.layers.BatchNormalization(momentum=0.999)
-        self.relu_1 = lambda x: tf.nn.leaky_relu(x, alpha=0.1)
+        self.relu_1 = tf.keras.layers.LeakyReLU(alpha=0.1)
         self.conv_1 = tf.keras.layers.Conv2D(channels_out, kernel_size=3, strides=1, padding='same', use_bias=False)
         self.downsample = channels_in != channels_out
         self.shortcut = tf.keras.layers.Conv2D(channels_out, kernel_size=1, strides=stride, use_bias=False)
         self.activate_before_residual = activate_before_residual
         self.droprate = droprate
 
-    def call(self, x, **kwargs):
+    def call(self, x, training=True, **kwargs):
         if self.downsample and self.activate_before_residual:
-            x = self.relu_0(self.bn_0(x))
+            x = self.relu_0(self.bn_0(x, training=training))
         elif not self.downsample:
-            out = self.relu_0(self.bn_0(x))
-        out = self.relu_1(self.bn_1(self.conv_0(x if self.downsample else out)))
+            out = self.relu_0(self.bn_0(x, training=training))
+        out = self.relu_1(self.bn_1(self.conv_0(x if self.downsample else out), training=training))
         if self.droprate > 0.:
             out = tf.nn.dropout(out, rate=self.droprate)
         out = self.conv_1(out)
@@ -38,9 +38,9 @@ class ResidualBlock(tf.keras.layers.Layer):
             units.append(unit(channels_in if i == 0 else channels_out, channels_out, stride if i == 0 else 1, droprate, activate_before_residual))
         return units
 
-    def call(self, x, **kwargs):
+    def call(self, x, training=True, **kwargs):
         for unit in self.units:
-            x = unit(x)
+            x = unit(x, training=training)
         return x
 
 
@@ -56,18 +56,18 @@ class WideResNet(tf.keras.Model):
         self.block_1 = ResidualBlock(N, channels[1], channels[2], Residual3x3Unit, 2, droprate)
         self.block_2 = ResidualBlock(N, channels[2], channels[3], Residual3x3Unit, 2, droprate)
         self.bn_0 = tf.keras.layers.BatchNormalization(momentum=0.999)
-        self.relu_0 = lambda x: tf.nn.leaky_relu(x, alpha=0.1)
+        self.relu_0 = tf.keras.layers.LeakyReLU(alpha=0.1)
         self.avg_pool = tf.keras.layers.AveragePooling2D((8, 8), (1, 1))
         self.flatten = tf.keras.layers.Flatten()
         self.dense = tf.keras.layers.Dense(num_classes)
 
-    def call(self, inputs, **kwargs):
+    def call(self, inputs, training=True, **kwargs):
         x = inputs
         x = self.conv_0(x)
-        x = self.block_0(x)
-        x = self.block_1(x)
-        x = self.block_2(x)
-        x = self.relu_0(self.bn_0(x))
+        x = self.block_0(x, trianing=training)
+        x = self.block_1(x, training=training)
+        x = self.block_2(x, training=training)
+        x = self.relu_0(self.bn_0(x, training=training))
         x = self.avg_pool(x)
         x = self.flatten(x)
         x = self.dense(x)
