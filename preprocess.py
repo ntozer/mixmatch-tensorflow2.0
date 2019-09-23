@@ -66,7 +66,7 @@ def convert_to_numpy(dataset):
     return np_dataset
 
 
-def change_range(dataset, start=(0., 255.), end=(0., 1.)):
+def change_range(dataset, start=(0., 255.), end=(-1., 1.)):
     dataset['image'] = (dataset['image'] - start[0]) / (start[1] - start[0])
     dataset['image'] = dataset['image'] * (end[1] - end[0]) + start[0]
     return dataset

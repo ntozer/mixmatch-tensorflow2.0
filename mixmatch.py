@@ -96,7 +96,16 @@ def weight_decay(model, decay_rate):
         var.assign(var * (1 - decay_rate))
 
 
-def ema_decay(model, ema_model, decay_rate):
-    for var, ema_var in zip(model.trainable_variables, ema_model.trainable_variables):
-        tmp_var = var * (1 - decay_rate)
-        ema_var.assign(tmp_var + decay_rate * ema_var)
+class EMA:
+    def __init__(self, decay_rate=0.999):
+        self.shadow = {}
+        self.decay_rate = decay_rate
+
+    def register(self, variables):
+        for var in variables:
+            self.shadow[var.name] = tf.identity(var)
+
+    def apply(self, variables):
+        for var in variables:
+            average = (1 - self.decay_rate) * var + self.decay_rate * self.shadow[var.name]
+            self.shadow[var.name] = average

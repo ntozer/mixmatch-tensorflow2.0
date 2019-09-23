@@ -6,10 +6,9 @@ import tensorflow as tf
 import tqdm
 import yaml
 
-from mixmatch import mixmatch, semi_loss, linear_rampup, interleave, weight_decay, ema_decay
+from mixmatch import mixmatch, semi_loss, linear_rampup, interleave, weight_decay, EMA
 from model import WideResNet
 from preprocess import load_data
-
 
 config = tf.compat.v1.ConfigProto()
 config.gpu_options.allow_growth = True
@@ -46,7 +45,9 @@ def get_args():
 
 
 def load_config(args):
-    with open(args['config_path'], 'r') as config_file:
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    config_path = os.path.join(dir_path, args['config_path'])
+    with open(config_path, 'r') as config_file:
         config = yaml.load(config_file, Loader=yaml.FullLoader)
     for key in args.keys():
         if key in config.keys():
@@ -56,7 +57,8 @@ def load_config(args):
 
 def main():
     args = vars(get_args())
-    if args['config_path'] is not None and os.path.exists(args['config_path']):
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    if args['config_path'] is not None and os.path.exists(os.path.join(dir_path, args['config_path'])):
         args = load_config(args)
 
     trainX, trainU, test, num_classes = load_data(args)
@@ -69,9 +71,9 @@ def main():
     model = WideResNet(num_classes, depth=28, width=2)
     model.build(input_shape=(None, 32, 32, 3))
     model.summary()
-    # ema_model = tf.keras.models.clone_model(model, input_tensors=tf.keras.layers.Input(shape=(None, 32, 32, 3)))
-    # ema_model.set_weights(model.get_weights())
-    ema_model = None
+
+    ema = EMA(decay_rate=args['ema_decay'])
+    ema.register(model.trainable_variables)
 
     optimizer = tf.keras.optimizers.Adam(lr=args['learning_rate'])
 
@@ -80,8 +82,8 @@ def main():
         writer = tf.summary.create_file_writer(f'.logs/{args["dataset"]}@{args["labelled_examples"]}/{int(time.time())}')
 
     for epoch in range(args['epochs']):
-        xe_loss, l2u_loss, total_loss, accuracy = train(datasetX, datasetU, model, ema_model, optimizer, epoch, args, writer)
-        test_xe_loss, test_accuracy = validate(test_dataset, model, epoch, args)
+        xe_loss, l2u_loss, total_loss, accuracy = train(datasetX, datasetU, model, ema, optimizer, epoch, args, writer)
+        test_xe_loss, test_accuracy = validate(test_dataset, model, ema, epoch, args)
 
         step = args['val_iteration'] * (epoch + 1)
 
@@ -98,7 +100,8 @@ def main():
         writer.flush()
 
 
-def train(datasetX, datasetU, model, ema_model, optimizer, epoch, args, writer):
+# @tf.function
+def train(datasetX, datasetU, model, ema, optimizer, epoch, args, writer):
     xe_loss_avg = tf.keras.metrics.Mean()
     l2u_loss_avg = tf.keras.metrics.Mean()
     total_loss_avg = tf.keras.metrics.Mean()
@@ -139,8 +142,8 @@ def train(datasetX, datasetU, model, ema_model, optimizer, epoch, args, writer):
 
         # run optimizer step
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
-        # ema_decay(model, ema_model, args['ema_decay'])
-        weight_decay(model, args['weight_decay'] * args['learning_rate'])
+        ema.apply(variables=model.trainable_variables)
+        weight_decay(model=model, decay_rate=args['weight_decay'] * args['learning_rate'])
 
         xe_loss_avg(xe_loss)
         l2u_loss_avg(l2u_loss)
@@ -158,9 +161,14 @@ def train(datasetX, datasetU, model, ema_model, optimizer, epoch, args, writer):
     return xe_loss_avg, l2u_loss_avg, total_loss_avg, accuracy
 
 
-def validate(dataset, model, epoch, args):
+def validate(dataset, model, ema, epoch, args):
     test_accuracy = tf.keras.metrics.Accuracy()
     test_xe_avg = tf.keras.metrics.Mean()
+
+    variable_refs = {var.name: var for var in model.trainable_variables}
+    trainable_variables = {var.name: tf.identity(var) for var in model.trainable_variables}
+    for name, var in ema.shadow.items():
+        variable_refs[name].assign(var)
 
     dataset = dataset.batch(args['batch_size'])
     for batch in dataset:
@@ -170,6 +178,12 @@ def validate(dataset, model, epoch, args):
         prediction = tf.argmax(logits, axis=1, output_type=tf.int32)
         test_accuracy(prediction, tf.argmax(batch['label'], axis=1, output_type=tf.int32))
     print(f'Epoch {epoch:04d}: Test XE Loss: {test_xe_avg.result():.4f}, Test Accuracy: {test_accuracy.result():.3%}')
+
+    # TODO add model saving code here
+
+    for name, var in trainable_variables.items():
+        variable_refs[name].assign(var)
+
     return test_xe_avg, test_accuracy
 
 
