@@ -8,4 +8,4 @@ T: 0.5
 K: 2
 alpha: 0.75
 lambda_u: 75
-rampup_length: 16
+rampup_length: 1024

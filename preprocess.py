@@ -36,18 +36,23 @@ def load_data(args):
     test = convert_to_one_hot(test, num_labels)
     for key in test.keys():
         test[key] = test[key].astype(dtype=np.float32)
-    trainX, trainU = generate_labelled_and_unlabelled_datasets(args, train, num_labels)
+    train, validation = split_dataset(int(0.9 * len(train['label'])), train, num_labels)
+    trainX, trainU = split_dataset(args['labelled_examples'], train, num_labels)
     labelled_dist = []
+    # outputting the labelled data distribution
     for i in range(num_labels):
         labelled_dist.append(len(np.where(trainX['label'][:, i] == 1)[0]))
     print('Labelled Distribution:', labelled_dist)
+
     for key in train.keys():
         trainX[key] = trainX[key].astype(dtype=np.float32)
         trainU[key] = trainU[key].astype(dtype=np.float32)
+        validation[key] = validation[key].astype(dtype=np.float32)
     test = change_range(test)
+    validation = change_range(validation)
     trainX = change_range(trainX)
     trainU = change_range(trainU)
-    return trainX, trainU, test, num_labels
+    return trainX, trainU, validation, test, num_labels
 
 
 def convert_to_numpy(dataset):
@@ -79,28 +84,28 @@ def convert_to_one_hot(dataset, num_labels):
     return dataset
 
 
-def generate_labelled_and_unlabelled_datasets(args, dataset, num_labels):
-    dataset = unison_shuffle(args, dataset)
-    labelled_idxs = []
-    unlabelled_idxs = []
+def split_dataset(split_size, dataset, num_labels):
+    dataset = unison_shuffle(dataset)
+    train_idx = []
+    validation_idxs = []
     for i in range(num_labels):
         idxs = np.where(dataset['label'][:, i] == 1)[0]
         np.random.shuffle(idxs)
-        labelled_idxs.extend(idxs[:int(args['labelled_examples']/num_labels)])
-        unlabelled_idxs.extend(idxs[int(args['labelled_examples']/num_labels):])
-    np.random.shuffle(labelled_idxs)
-    np.random.shuffle(unlabelled_idxs)
-    labelled = {}
-    unlabelled = {}
+        split_idx = int(split_size / num_labels)
+        train_idx.extend(idxs[:split_idx])
+        validation_idxs.extend(idxs[split_idx:])
+    np.random.shuffle(train_idx)
+    np.random.shuffle(validation_idxs)
+    train = {}
+    validation = {}
     for key in dataset.keys():
-        labelled[key] = dataset[key][labelled_idxs]
-        unlabelled[key] = dataset[key][unlabelled_idxs]
-    return labelled, unlabelled
+        train[key] = dataset[key][train_idx]
+        validation[key] = dataset[key][validation_idxs]
+    return train, validation
 
 
-def unison_shuffle(args, dataset):
+def unison_shuffle(dataset):
     assert len(set([len(dataset[key]) for key in dataset.keys()])) == 1
-    np.random.seed(args['seed'])
     p = np.random.permutation(len(dataset[list(dataset.keys())[0]]))
     for key in dataset.keys():
         dataset[key] = dataset[key][p]

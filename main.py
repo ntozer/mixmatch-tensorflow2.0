@@ -61,11 +61,12 @@ def main():
     if args['config_path'] is not None and os.path.exists(os.path.join(dir_path, args['config_path'])):
         args = load_config(args)
 
-    trainX, trainU, test, num_classes = load_data(args)
+    trainX, trainU, validation, test, num_classes = load_data(args)
 
     datasetX = tf.data.Dataset.from_tensor_slices(trainX)
     datasetU = tf.data.Dataset.from_tensor_slices(trainU)
 
+    val_dataset = tf.data.Dataset.from_tensor_slices(validation)
     test_dataset = tf.data.Dataset.from_tensor_slices(test)
 
     model = WideResNet(num_classes, depth=28, width=2)
@@ -77,27 +78,48 @@ def main():
 
     optimizer = tf.keras.optimizers.Adam(lr=args['learning_rate'])
 
-    writer = None
+    train_writer = None
     if args['tensorboard']:
-        writer = tf.summary.create_file_writer(f'.logs/{args["dataset"]}@{args["labelled_examples"]}/{int(time.time())}')
+        train_writer = tf.summary.create_file_writer(f'.logs/{args["dataset"]}@{args["labelled_examples"]}/{int(time.time())}/train')
+        val_writer = tf.summary.create_file_writer(f'.logs/{args["dataset"]}@{args["labelled_examples"]}/{int(time.time())}/validation')
+        test_writer = tf.summary.create_file_writer(f'.logs/{args["dataset"]}@{args["labelled_examples"]}/{int(time.time())}/test')
 
     for epoch in range(args['epochs']):
-        xe_loss, l2u_loss, total_loss, accuracy = train(datasetX, datasetU, model, ema, optimizer, epoch, args, writer)
-        test_xe_loss, test_accuracy = validate(test_dataset, model, ema, epoch, args)
+        xe_loss, l2u_loss, total_loss, accuracy = train(datasetX, datasetU, model, ema, optimizer, epoch, args, train_writer)
+
+        # swap model weights to EMA model for validation
+        variable_refs = {var.name: var for var in model.trainable_variables}
+        trainable_variables = {var.name: tf.identity(var) for var in model.trainable_variables}
+        for name, var in ema.shadow.items():
+            variable_refs[name].assign(var)
+
+        val_xe_loss, val_accuracy = validate(val_dataset, model, epoch, args, split='Validation')
+        test_xe_loss, test_accuracy = validate(test_dataset, model, epoch, args, split='Test')
+
+        # TODO add model saving code here
+
+        # swap model weights back to original model weights
+        for name, var in trainable_variables.items():
+            variable_refs[name].assign(var)
 
         step = args['val_iteration'] * (epoch + 1)
 
-        if writer is not None:
-            with writer.as_default():
+        if args['tensorboard'] is not None:
+            with train_writer.as_default():
                 tf.summary.scalar('xe_loss', xe_loss.result(), step=step)
                 tf.summary.scalar('l2u_loss', l2u_loss.result(), step=step)
                 tf.summary.scalar('total_loss', total_loss.result(), step=step)
                 tf.summary.scalar('accuracy', accuracy.result(), step=step)
-                tf.summary.scalar('xe_loss(test)', test_xe_loss.result(), step=step)
-                tf.summary.scalar('accuracy(test)', test_accuracy.result(), step=step)
+            with val_writer.as_default():
+                tf.summary.scalar('xe_loss', val_xe_loss.result(), step=step)
+                tf.summary.scalar('accuracy', val_accuracy.result(), step=step)
+            with test_writer.as_default():
+                tf.summary.scalar('xe_loss', test_xe_loss.result(), step=step)
+                tf.summary.scalar('accuracy', test_accuracy.result(), step=step)
 
-    if writer is not None:
-        writer.flush()
+    if args['tensorboard']:
+        for writer in [train_writer, val_writer, test_writer]:
+            writer.flush()
 
 
 # @tf.function
@@ -161,30 +183,19 @@ def train(datasetX, datasetU, model, ema, optimizer, epoch, args, writer):
     return xe_loss_avg, l2u_loss_avg, total_loss_avg, accuracy
 
 
-def validate(dataset, model, ema, epoch, args):
-    test_accuracy = tf.keras.metrics.Accuracy()
-    test_xe_avg = tf.keras.metrics.Mean()
-
-    variable_refs = {var.name: var for var in model.trainable_variables}
-    trainable_variables = {var.name: tf.identity(var) for var in model.trainable_variables}
-    for name, var in ema.shadow.items():
-        variable_refs[name].assign(var)
+def validate(dataset, model, epoch, args, split):
+    accuracy = tf.keras.metrics.Accuracy()
+    xe_avg = tf.keras.metrics.Mean()
 
     dataset = dataset.batch(args['batch_size'])
     for batch in dataset:
         logits = model(batch['image'], training=False)
         xe_loss = tf.nn.softmax_cross_entropy_with_logits(labels=batch['label'], logits=logits)
-        test_xe_avg(xe_loss)
+        xe_avg(xe_loss)
         prediction = tf.argmax(logits, axis=1, output_type=tf.int32)
-        test_accuracy(prediction, tf.argmax(batch['label'], axis=1, output_type=tf.int32))
-    print(f'Epoch {epoch:04d}: Test XE Loss: {test_xe_avg.result():.4f}, Test Accuracy: {test_accuracy.result():.3%}')
-
-    # TODO add model saving code here
-
-    for name, var in trainable_variables.items():
-        variable_refs[name].assign(var)
-
-    return test_xe_avg, test_accuracy
+        accuracy(prediction, tf.argmax(batch['label'], axis=1, output_type=tf.int32))
+    print(f'Epoch {epoch:04d}: {split} XE Loss: {xe_avg.result():.4f}, {split} Accuracy: {accuracy.result():.3%}')
+    return xe_avg, accuracy
 
 
 if __name__ == '__main__':
