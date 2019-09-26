@@ -73,8 +73,7 @@ def main():
     model.build(input_shape=(None, 32, 32, 3))
     model.summary()
 
-    ema = EMA(decay_rate=args['ema_decay'])
-    ema.register(model.trainable_variables)
+    ema_model = EMA(model, decay_rate=args['ema_decay'])
 
     optimizer = tf.keras.optimizers.Adam(lr=args['learning_rate'])
 
@@ -85,22 +84,10 @@ def main():
         test_writer = tf.summary.create_file_writer(f'.logs/{args["dataset"]}@{args["labelled_examples"]}/{int(time.time())}/test')
 
     for epoch in range(args['epochs']):
-        xe_loss, l2u_loss, total_loss, accuracy = train(datasetX, datasetU, model, ema, optimizer, epoch, args, train_writer)
-
-        # swap model weights to EMA model for validation
-        variable_refs = {var.name: var for var in model.trainable_variables}
-        trainable_variables = {var.name: tf.identity(var) for var in model.trainable_variables}
-        for name, var in ema.shadow.items():
-            variable_refs[name].assign(var)
-
-        val_xe_loss, val_accuracy = validate(val_dataset, model, epoch, args, split='Validation')
-        test_xe_loss, test_accuracy = validate(test_dataset, model, epoch, args, split='Test')
-
-        # TODO add model saving code here
-
-        # swap model weights back to original model weights
-        for name, var in trainable_variables.items():
-            variable_refs[name].assign(var)
+        xe_loss, l2u_loss, total_loss, accuracy = train(datasetX, datasetU, model, ema_model, optimizer, epoch, args) #, train_writer)
+        with ema_model:
+            val_xe_loss, val_accuracy = validate(val_dataset, model, epoch, args, split='Validation')
+            test_xe_loss, test_accuracy = validate(test_dataset, model, epoch, args, split='Test')
 
         step = args['val_iteration'] * (epoch + 1)
 
@@ -122,8 +109,7 @@ def main():
             writer.flush()
 
 
-# @tf.function
-def train(datasetX, datasetU, model, ema, optimizer, epoch, args, writer):
+def train(datasetX, datasetU, model, ema_model, optimizer, epoch, args):
     xe_loss_avg = tf.keras.metrics.Mean()
     l2u_loss_avg = tf.keras.metrics.Mean()
     total_loss_avg = tf.keras.metrics.Mean()
@@ -134,7 +120,8 @@ def train(datasetX, datasetU, model, ema, optimizer, epoch, args, writer):
     iteratorX = iter(shuffle_and_batch(datasetX))
     iteratorU = iter(shuffle_and_batch(datasetU))
 
-    for batch_num in tqdm.tqdm(range(args['val_iteration']), unit='batch'):
+    progress_bar = tqdm.tqdm(range(args['val_iteration']), unit='batch')
+    for batch_num in progress_bar:
         lambda_u = args['lambda_u'] * linear_rampup(epoch + batch_num/args['val_iteration'], args['rampup_length'])
         try:
             batchX = next(iteratorX)
@@ -157,14 +144,14 @@ def train(datasetX, datasetU, model, ema, optimizer, epoch, args, writer):
             logits_x = logits[0]
             logits_u = tf.concat(logits[1:], axis=0)
 
-            # compute loss and gradients
+            # compute loss
             xe_loss, l2u_loss = semi_loss(XUy[:args['batch_size']], logits_x, XUy[args['batch_size']:], logits_u)
             total_loss = xe_loss + lambda_u * l2u_loss
-            grads = tape.gradient(total_loss, model.trainable_variables)
 
-        # run optimizer step
+        # compute gradients and run optimizer step
+        grads = tape.gradient(total_loss, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
-        ema.apply(variables=model.trainable_variables)
+        ema_model.apply()
         weight_decay(model=model, decay_rate=args['weight_decay'] * args['learning_rate'])
 
         xe_loss_avg(xe_loss)
@@ -172,14 +159,13 @@ def train(datasetX, datasetU, model, ema, optimizer, epoch, args, writer):
         total_loss_avg(total_loss)
         accuracy(tf.argmax(batchX['label'], axis=1, output_type=tf.int32), model(tf.cast(batchX['image'], dtype=tf.float32), training=False))
 
-    if writer is not None:
-        step = args['val_iteration'] * (epoch + 1)
-        with writer.as_default():
-            tf.summary.image('batchX', batchX['image'], step, 4)
-            tf.summary.image('batchU', batchU['image'], step, 4)
-            tf.summary.image('mixmatch', XU[0], step, 4)
-
-    print(f'Epoch {epoch:04d}: XE Loss: {xe_loss_avg.result():.4f}, L2U Loss: {l2u_loss_avg.result():.4f}, WeightU: {lambda_u:.2f}, Total Loss: {total_loss_avg.result():.4f}, Accuracy: {accuracy.result():.3%}')
+        progress_bar.set_postfix({
+            'XE Loss': f'{xe_loss_avg.result():.4f}',
+            'L2U Loss': f'{l2u_loss_avg.result():.4f}',
+            'WeightU': f'{lambda_u:.3f}',
+            'Total Loss': f'{total_loss_avg.result():.4f}',
+            'Accuracy': f'{accuracy.result():.3%}'
+        })
     return xe_loss_avg, l2u_loss_avg, total_loss_avg, accuracy
 
 
@@ -195,6 +181,7 @@ def validate(dataset, model, epoch, args, split):
         prediction = tf.argmax(logits, axis=1, output_type=tf.int32)
         accuracy(prediction, tf.argmax(batch['label'], axis=1, output_type=tf.int32))
     print(f'Epoch {epoch:04d}: {split} XE Loss: {xe_avg.result():.4f}, {split} Accuracy: {accuracy.result():.3%}')
+
     return xe_avg, accuracy
 
 

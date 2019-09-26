@@ -4,6 +4,7 @@ import numpy as np
 import tensorflow as tf
 
 
+@tf.function
 def augment(x):
     # random left right flipping
     x = tf.image.random_flip_left_right(x)
@@ -22,6 +23,7 @@ def guess_labels(u_aug, model, K):
     return u_logits
 
 
+@tf.function
 def sharpen(p, T):
     return tf.pow(p, 1/T) / tf.reduce_sum(tf.pow(p, 1/T), axis=1, keepdims=True)
 
@@ -75,6 +77,7 @@ def mixmatch(model, x, y, u, T=0.5, K=2, alpha=0.75):
     return XU, XUy
 
 
+@tf.function
 def semi_loss(labels_x, logits_x, labels_u, logits_u):
     loss_xe = tf.nn.softmax_cross_entropy_with_logits(labels=labels_x, logits=logits_x)
     loss_xe = tf.reduce_mean(loss_xe)
@@ -97,15 +100,30 @@ def weight_decay(model, decay_rate):
 
 
 class EMA:
-    def __init__(self, decay_rate=0.999):
+    def __init__(self, model, decay_rate=0.999):
         self.shadow = {}
         self.decay_rate = decay_rate
+        self.model = model
+        self.variable_refs = {var.name: var for var in self.model.trainable_variables}
+        self.weights = None
+        self.register(model.trainable_variables)
 
     def register(self, variables):
         for var in variables:
             self.shadow[var.name] = tf.identity(var)
 
-    def apply(self, variables):
-        for var in variables:
+    def apply(self):
+        for var in self.model.trainable_variables:
             average = (1 - self.decay_rate) * var + self.decay_rate * self.shadow[var.name]
             self.shadow[var.name] = average
+
+    def __enter__(self):
+        # swap model weights to EMA model for validation
+        self.weights = {var.name: tf.identity(var) for var in self.model.trainable_variables}
+        for name, var in self.shadow.items():
+            self.variable_refs[name].assign(var)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # swap model weights back to original model weights
+        for name, var in self.weights.items():
+            self.variable_refs[name].assign(var)
