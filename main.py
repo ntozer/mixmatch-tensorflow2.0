@@ -1,4 +1,5 @@
 import argparse
+import fnmatch
 import os
 import time
 
@@ -6,7 +7,7 @@ import tensorflow as tf
 import tqdm
 import yaml
 
-from mixmatch import mixmatch, semi_loss, linear_rampup, interleave, weight_decay, EMA
+from mixmatch import mixmatch, semi_loss, linear_rampup, interleave, weight_decay, ema
 from model import WideResNet
 from preprocess import load_data
 
@@ -40,6 +41,7 @@ def get_args():
 
     parser.add_argument('--config-path', type=str, default=None, help='path to yaml config file, overwrites args')
     parser.add_argument('--tensorboard', action='store_true', help='enable tensorboard visualization')
+    parser.add_argument('--resume', type=str, default=None, help='checkpoint directory to resume from')
 
     return parser.parse_args()
 
@@ -55,11 +57,23 @@ def load_config(args):
     return args
 
 
+def get_most_recent_ckpts(ckpt_path):
+    ema_model_ckpts = []
+    model_ckpts = []
+    for file in os.listdir(ckpt_path):
+        if fnmatch.fnmatch(file, 'model-*.ckpt'):
+            model_ckpts.append(file)
+        elif fnmatch.fnmatch(file, 'ema_model-*.ckpt'):
+            model_ckpts.append(file)
+    return max(model_ckpts), max(ema_model_ckpts)
+
+
 def main():
     args = vars(get_args())
     dir_path = os.path.dirname(os.path.realpath(__file__))
     if args['config_path'] is not None and os.path.exists(os.path.join(dir_path, args['config_path'])):
         args = load_config(args)
+    log_path = f'.logs/{args["dataset"]}@{args["labelled_examples"]}'
 
     trainX, trainU, validation, test, num_classes = load_data(args)
 
@@ -73,25 +87,40 @@ def main():
     model.build(input_shape=(None, 32, 32, 3))
     model.summary()
 
-    ema_model = EMA(model, decay_rate=args['ema_decay'])
+    ema_model = WideResNet(num_classes, depth=28, width=2)
+    ema_model.build(input_shape=(None, 32, 32, 3))
+    ema_model.set_weights(model.get_weights())
+
+    if args['resume']:
+        log_path = f'{log_path}/{args["resume"]}'
+        model_ckpt, ema_model_ckpt = get_most_recent_ckpts(f'{log_path}/checkpoints')
+        model.load_weights(model_ckpt)
+        ema_model.load_weights(ema_model)
+    else:
+        log_path = f'{log_path}/{int(time.time())}'
 
     optimizer = tf.keras.optimizers.Adam(lr=args['learning_rate'])
 
     train_writer = None
     if args['tensorboard']:
-        train_writer = tf.summary.create_file_writer(f'.logs/{args["dataset"]}@{args["labelled_examples"]}/{int(time.time())}/train')
-        val_writer = tf.summary.create_file_writer(f'.logs/{args["dataset"]}@{args["labelled_examples"]}/{int(time.time())}/validation')
-        test_writer = tf.summary.create_file_writer(f'.logs/{args["dataset"]}@{args["labelled_examples"]}/{int(time.time())}/test')
+        train_writer = tf.summary.create_file_writer(f'{log_path}/train')
+        val_writer = tf.summary.create_file_writer(f'{log_path}/validation')
+        test_writer = tf.summary.create_file_writer(f'{log_path}/test')
 
     for epoch in range(args['epochs']):
         xe_loss, l2u_loss, total_loss, accuracy = train(datasetX, datasetU, model, ema_model, optimizer, epoch, args) #, train_writer)
-        with ema_model:
-            val_xe_loss, val_accuracy = validate(val_dataset, model, epoch, args, split='Validation')
-            test_xe_loss, test_accuracy = validate(test_dataset, model, epoch, args, split='Test')
+        # with ema_model:
+        val_xe_loss, val_accuracy = validate(val_dataset, ema_model, epoch, args, split='Validation')
+        test_xe_loss, test_accuracy = validate(test_dataset, ema_model, epoch, args, split='Test')
 
         step = args['val_iteration'] * (epoch + 1)
 
-        if args['tensorboard'] is not None:
+        model_ckpt_path = f'{log_path}/checkpoints/model-{epoch:04d}.ckpt'
+        ema_model_ckpt_path = f'{log_path}/checkpoints/ema_model-{epoch:04d}.ckpt'
+        model.save_weights(model_ckpt_path)
+        ema_model.save_weights(ema_model_ckpt_path)
+
+        if args['tensorboard']:
             with train_writer.as_default():
                 tf.summary.scalar('xe_loss', xe_loss.result(), step=step)
                 tf.summary.scalar('l2u_loss', l2u_loss.result(), step=step)
@@ -151,7 +180,7 @@ def train(datasetX, datasetU, model, ema_model, optimizer, epoch, args):
         # compute gradients and run optimizer step
         grads = tape.gradient(total_loss, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
-        ema_model.apply()
+        ema(model, ema_model, args['ema_decay'])
         weight_decay(model=model, decay_rate=args['weight_decay'] * args['learning_rate'])
 
         xe_loss_avg(xe_loss)

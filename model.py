@@ -17,7 +17,7 @@ class Residual3x3Unit(tf.keras.layers.Layer):
         self.droprate = droprate
 
     @tf.function
-    def call(self, x, training=True, **kwargs):
+    def call(self, x, training=True):
         if self.downsample and self.activate_before_residual:
             x = self.relu_0(self.bn_0(x, training=training))
         elif not self.downsample:
@@ -41,7 +41,7 @@ class ResidualBlock(tf.keras.layers.Layer):
         return units
 
     @tf.function
-    def call(self, x, training=True, **kwargs):
+    def call(self, x, training=True):
         for unit in self.units:
             x = unit(x, training=training)
         return x
@@ -65,7 +65,7 @@ class WideResNet(tf.keras.Model):
         self.dense = tf.keras.layers.Dense(num_classes)
 
     @tf.function
-    def call(self, inputs, training=True, **kwargs):
+    def call(self, inputs, training=True):
         x = inputs
         x = self.conv_0(x)
         x = self.block_0(x, training=training)

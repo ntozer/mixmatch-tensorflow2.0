@@ -28,8 +28,8 @@ def sharpen(p, T):
     return tf.pow(p, 1/T) / tf.reduce_sum(tf.pow(p, 1/T), axis=1, keepdims=True)
 
 
-def mixup(x1, x2, y1, y2, alpha):
-    beta = np.random.beta(alpha, alpha)
+@tf.function
+def mixup(x1, x2, y1, y2, beta):
     beta = tf.maximum(beta, 1-beta)
     x = beta * x1 + (1 - beta) * x2
     y = beta * y1 + (1 - beta) * y2
@@ -63,7 +63,7 @@ def mixmatch(model, x, y, u, T=0.5, K=2, alpha=0.75):
     for k in range(K):
         u_aug[k] = augment(u)
     mean_logits = guess_labels(u_aug, model, K)
-    qb = sharpen(mean_logits, T)
+    qb = sharpen(mean_logits, tf.constant(T))
     U = tf.concat(u_aug, axis=0)
     qb = tf.concat([qb for _ in range(K)], axis=0)
     XU = tf.concat([x_aug, U], axis=0)
@@ -71,7 +71,7 @@ def mixmatch(model, x, y, u, T=0.5, K=2, alpha=0.75):
     indices = tf.random.shuffle(tf.range(XU.shape[0]))
     W = tf.gather(XU, indices)
     Wy = tf.gather(XUy, indices)
-    XU, XUy = mixup(XU, W, XUy, Wy, alpha)
+    XU, XUy = mixup(XU, W, XUy, Wy, beta=tf.constant(np.random.beta(alpha, alpha)))
     XU = tf.split(XU, K + 1, axis=0)
     XU = interleave(XU, batch_size)
     return XU, XUy
@@ -99,31 +99,9 @@ def weight_decay(model, decay_rate):
         var.assign(var * (1 - decay_rate))
 
 
-class EMA:
-    def __init__(self, model, decay_rate=0.999):
-        self.shadow = {}
-        self.decay_rate = decay_rate
-        self.model = model
-        self.variable_refs = {var.name: var for var in self.model.trainable_variables}
-        self.weights = None
-        self.register(model.trainable_variables)
-
-    def register(self, variables):
-        for var in variables:
-            self.shadow[var.name] = tf.identity(var)
-
-    def apply(self):
-        for var in self.model.trainable_variables:
-            average = (1 - self.decay_rate) * var + self.decay_rate * self.shadow[var.name]
-            self.shadow[var.name] = average
-
-    def __enter__(self):
-        # swap model weights to EMA model for validation
-        self.weights = {var.name: tf.identity(var) for var in self.model.trainable_variables}
-        for name, var in self.shadow.items():
-            self.variable_refs[name].assign(var)
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        # swap model weights back to original model weights
-        for name, var in self.weights.items():
-            self.variable_refs[name].assign(var)
+def ema(model, ema_model, ema_decay):
+    for var, ema_var in zip(model.variables, ema_model.variables):
+        if var.trainable:
+            ema_var.assign((1 - ema_decay) * var + ema_decay * ema_var)
+        else:
+            ema_var.assign(tf.identity(var))
