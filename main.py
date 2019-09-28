@@ -41,7 +41,7 @@ def get_args():
 
     parser.add_argument('--config-path', type=str, default=None, help='path to yaml config file, overwrites args')
     parser.add_argument('--tensorboard', action='store_true', help='enable tensorboard visualization')
-    parser.add_argument('--resume', type=str, default=None, help='checkpoint directory to resume from')
+    parser.add_argument('--resume', action='store_true', help='whether to restore from previous training runs')
 
     return parser.parse_args()
 
@@ -57,23 +57,13 @@ def load_config(args):
     return args
 
 
-def get_most_recent_ckpts(ckpt_path):
-    ema_model_ckpts = []
-    model_ckpts = []
-    for file in os.listdir(ckpt_path):
-        if fnmatch.fnmatch(file, 'model-*.ckpt'):
-            model_ckpts.append(file)
-        elif fnmatch.fnmatch(file, 'ema_model-*.ckpt'):
-            model_ckpts.append(file)
-    return max(model_ckpts), max(ema_model_ckpts)
-
-
 def main():
     args = vars(get_args())
     dir_path = os.path.dirname(os.path.realpath(__file__))
     if args['config_path'] is not None and os.path.exists(os.path.join(dir_path, args['config_path'])):
         args = load_config(args)
     log_path = f'.logs/{args["dataset"]}@{args["labelled_examples"]}'
+    ckpt_dir = f'{log_path}/checkpoints'
 
     trainX, trainU, validation, test, num_classes = load_data(args)
 
@@ -85,21 +75,21 @@ def main():
 
     model = WideResNet(num_classes, depth=28, width=2)
     model.build(input_shape=(None, 32, 32, 3))
-    model.summary()
+    optimizer = tf.keras.optimizers.Adam(lr=args['learning_rate'])
+    model_ckpt = tf.train.Checkpoint(step=tf.Variable(1), optimizer=optimizer, net=model)
+    manager = tf.train.CheckpointManager(model_ckpt, f'{ckpt_dir}/model', max_to_keep=3)
 
     ema_model = WideResNet(num_classes, depth=28, width=2)
     ema_model.build(input_shape=(None, 32, 32, 3))
     ema_model.set_weights(model.get_weights())
+    ema_ckpt = tf.train.Checkpoint(step=tf.Variable(1), net=ema_model)
+    ema_manager = tf.train.CheckpointManager(ema_ckpt, f'{ckpt_dir}/ema', max_to_keep=3)
 
+    model.summary()
     if args['resume']:
-        log_path = f'{log_path}/{args["resume"]}'
-        model_ckpt, ema_model_ckpt = get_most_recent_ckpts(f'{log_path}/checkpoints')
-        model.load_weights(model_ckpt)
-        ema_model.load_weights(ema_model)
-    else:
-        log_path = f'{log_path}/{int(time.time())}'
-
-    optimizer = tf.keras.optimizers.Adam(lr=args['learning_rate'])
+        model_ckpt.restore(manager.latest_checkpoint)
+        ema_ckpt.restore(manager.latest_checkpoint)
+        print(f'Restored from {manager.latest_checkpoint} and {ema_manager.latest_checkpoint}')
 
     train_writer = None
     if args['tensorboard']:
@@ -108,18 +98,19 @@ def main():
         test_writer = tf.summary.create_file_writer(f'{log_path}/test')
 
     for epoch in range(args['epochs']):
-        xe_loss, l2u_loss, total_loss, accuracy = train(datasetX, datasetU, model, ema_model, optimizer, epoch, args) #, train_writer)
-        # with ema_model:
+        xe_loss, l2u_loss, total_loss, accuracy = train(datasetX, datasetU, model, ema_model, optimizer, epoch, args)
         val_xe_loss, val_accuracy = validate(val_dataset, ema_model, epoch, args, split='Validation')
         test_xe_loss, test_accuracy = validate(test_dataset, ema_model, epoch, args, split='Test')
 
+        model_ckpt.step.assign_add(1)
+        ema_ckpt.step.assign_add(1)
+        if epoch % 16 == 0:
+            model_save_path = manager.save(checkpoint_number=epoch)
+            ema_save_path = ema_manager.save(checkpoint_number=epoch)
+            print(f'Saved model checkpoint for step {int(model_ckpt.step)}: {model_save_path}')
+            print(f'Saved ema_model checkpoint for step {int(ema_ckpt.step)}: {ema_save_path}')
+
         step = args['val_iteration'] * (epoch + 1)
-
-        model_ckpt_path = f'{log_path}/checkpoints/model-{epoch:04d}.ckpt'
-        ema_model_ckpt_path = f'{log_path}/checkpoints/ema_model-{epoch:04d}.ckpt'
-        model.save_weights(model_ckpt_path)
-        ema_model.save_weights(ema_model_ckpt_path)
-
         if args['tensorboard']:
             with train_writer.as_default():
                 tf.summary.scalar('xe_loss', xe_loss.result(), step=step)
