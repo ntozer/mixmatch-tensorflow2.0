@@ -9,7 +9,7 @@ import yaml
 
 from mixmatch import mixmatch, semi_loss, linear_rampup, interleave, weight_decay, ema
 from model import WideResNet
-from preprocess import load_data
+from preprocess import fetch_dataset
 
 config = tf.compat.v1.ConfigProto()
 config.gpu_options.allow_growth = True
@@ -23,11 +23,12 @@ def get_args():
     parser.add_argument('--dataset', type=str, default='svhn',
                         help='dataset used for training (e.g. cifar10, cifar100, svhn, svhn+extra)')
 
-    parser.add_argument('--epochs', type=int, default=1024, help='number of epochs, (default: 64)')
-    parser.add_argument('--batch-size',  type=int, default=64, help='examples per batch (default: 256)')
+    parser.add_argument('--epochs', type=int, default=1024, help='number of epochs, (default: 1024)')
+    parser.add_argument('--batch-size',  type=int, default=64, help='examples per batch (default: 64)')
     parser.add_argument('--learning-rate', type=float, default=1e-2, help='learning_rate, (default: 0.01)')
 
     parser.add_argument('--labelled-examples', type=int, default=4000, help='number labelled examples (default: 4000')
+    parser.add_argument('--validation-examples', type=int, default=5000, help='number validation examples (default: 5000')
     parser.add_argument('--val-iteration', type=int, default=1024, help='number of iterations before validation (default: 1024)')
     parser.add_argument('--T', type=float, default=0.5, help='temperature sharpening ratio (default: 0.5)')
     parser.add_argument('--K', type=int, default=2, help='number of rounds of augmentation (default: 2)')
@@ -62,27 +63,22 @@ def main():
     dir_path = os.path.dirname(os.path.realpath(__file__))
     if args['config_path'] is not None and os.path.exists(os.path.join(dir_path, args['config_path'])):
         args = load_config(args)
+    start_epoch = 0
     log_path = f'.logs/{args["dataset"]}@{args["labelled_examples"]}'
     ckpt_dir = f'{log_path}/checkpoints'
 
-    trainX, trainU, validation, test, num_classes = load_data(args)
-
-    datasetX = tf.data.Dataset.from_tensor_slices(trainX)
-    datasetU = tf.data.Dataset.from_tensor_slices(trainU)
-
-    val_dataset = tf.data.Dataset.from_tensor_slices(validation)
-    test_dataset = tf.data.Dataset.from_tensor_slices(test)
+    datasetX, datasetU, val_dataset, test_dataset, num_classes = fetch_dataset(args, log_path)
 
     model = WideResNet(num_classes, depth=28, width=2)
     model.build(input_shape=(None, 32, 32, 3))
     optimizer = tf.keras.optimizers.Adam(lr=args['learning_rate'])
-    model_ckpt = tf.train.Checkpoint(step=tf.Variable(1), optimizer=optimizer, net=model)
+    model_ckpt = tf.train.Checkpoint(step=tf.Variable(0), optimizer=optimizer, net=model)
     manager = tf.train.CheckpointManager(model_ckpt, f'{ckpt_dir}/model', max_to_keep=3)
 
     ema_model = WideResNet(num_classes, depth=28, width=2)
     ema_model.build(input_shape=(None, 32, 32, 3))
     ema_model.set_weights(model.get_weights())
-    ema_ckpt = tf.train.Checkpoint(step=tf.Variable(1), net=ema_model)
+    ema_ckpt = tf.train.Checkpoint(step=tf.Variable(0), net=ema_model)
     ema_manager = tf.train.CheckpointManager(ema_ckpt, f'{ckpt_dir}/ema', max_to_keep=3)
 
     model.summary()
@@ -97,18 +93,19 @@ def main():
         val_writer = tf.summary.create_file_writer(f'{log_path}/validation')
         test_writer = tf.summary.create_file_writer(f'{log_path}/test')
 
-    for epoch in range(args['epochs']):
+    for epoch in range(start_epoch, args['epochs']):
         xe_loss, l2u_loss, total_loss, accuracy = train(datasetX, datasetU, model, ema_model, optimizer, epoch, args)
         val_xe_loss, val_accuracy = validate(val_dataset, ema_model, epoch, args, split='Validation')
         test_xe_loss, test_accuracy = validate(test_dataset, ema_model, epoch, args, split='Test')
 
-        model_ckpt.step.assign_add(1)
-        ema_ckpt.step.assign_add(1)
         if epoch % 16 == 0:
             model_save_path = manager.save(checkpoint_number=epoch)
             ema_save_path = ema_manager.save(checkpoint_number=epoch)
-            print(f'Saved model checkpoint for step {int(model_ckpt.step)}: {model_save_path}')
-            print(f'Saved ema_model checkpoint for step {int(ema_ckpt.step)}: {ema_save_path}')
+            print(f'Saved model checkpoint for epoch {model_ckpt.step} @ {model_save_path}')
+            print(f'Saved ema checkpoint for epoch {ema_ckpt.step} @ {ema_save_path}')
+
+        model_ckpt.step.assign_add(1)
+        ema_ckpt.step.assign_add(1)
 
         step = args['val_iteration'] * (epoch + 1)
         if args['tensorboard']:

@@ -1,112 +1,171 @@
+import os
+
 import numpy as np
+import tensorflow as tf
 import tensorflow_datasets as tfds
 
 
-def load_data(args):
+def download_dataset(dataset_name):
     train = None
     test = None
-    if args['dataset'] == 'svhn':
+    if dataset_name == 'svhn':
         dataset = tfds.load(name='svhn_cropped')
-        train = convert_to_numpy(dataset['train'])
-        test = convert_to_numpy(dataset['test'])
-        num_labels = 10
+        train = dataset['train']
+        test = dataset['test']
 
-    elif args['dataset'] == 'svhn+extra':
+    elif dataset_name == 'svhn+extra':
         dataset = tfds.load(name='svhn_cropped')
-        train = convert_to_numpy(dataset['train'])
-        extra = convert_to_numpy(dataset['extra'])
-        for key in train.keys():
-            train[key] = np.concatenate([train[key], extra[key]], axis=0)
-        test = convert_to_numpy(dataset['test'])
-        num_labels = 10
+        train = dataset['train']
+        train.concatenate(dataset['extra'])
+        test = ['test']
 
-    elif args['dataset'] == 'cifar10':
+    elif dataset_name == 'cifar10':
         dataset = tfds.load(name='cifar10')
-        train = convert_to_numpy(dataset['train'])
-        test = convert_to_numpy(dataset['test'])
-        num_labels = 10
+        train = dataset['train']
+        test = dataset['test']
 
-    elif args['dataset'] == 'cifar100':
+    elif dataset_name == 'cifar100':
         dataset = tfds.load(name='cifar100')
-        train = convert_to_numpy(dataset['train'])
-        test = convert_to_numpy(dataset['test'])
-        num_labels = 100
+        train = dataset['train']
+        test = dataset['test']
 
-    train = convert_to_one_hot(train, num_labels)
-    test = convert_to_one_hot(test, num_labels)
-    for key in test.keys():
-        test[key] = test[key].astype(dtype=np.float32)
-    train, validation = split_dataset(int(0.9 * len(train['label'])), train, num_labels)
-    trainX, trainU = split_dataset(args['labelled_examples'], train, num_labels)
-    labelled_dist = []
-    # outputting the labelled data distribution
-    for i in range(num_labels):
-        labelled_dist.append(len(np.where(trainX['label'][:, i] == 1)[0]))
-    print('Labelled Distribution:', labelled_dist)
-
-    for key in train.keys():
-        trainX[key] = trainX[key].astype(dtype=np.float32)
-        trainU[key] = trainU[key].astype(dtype=np.float32)
-        validation[key] = validation[key].astype(dtype=np.float32)
-    test = change_range(test)
-    validation = change_range(validation)
-    trainX = change_range(trainX)
-    trainU = change_range(trainU)
-    return trainX, trainU, validation, test, num_labels
+    return train, test
 
 
-def convert_to_numpy(dataset):
-    np_generator = tfds.as_numpy(dataset)
-    examples = {}
-    for example in np_generator:
-        for key in example:
-            try:
-                examples[key].append(example[key])
-            except KeyError:
-                examples[key] = [example[key]]
-    np_dataset = {}
-    for key in examples.keys():
-        np_dataset[key] = np.stack(examples[key])
-        np_dataset[key] = np_dataset[key]
-    return np_dataset
+def _list_to_tf_dataset(dataset):
+    def _dataset_gen():
+        for example in dataset:
+            yield example
+    return tf.data.Dataset.from_generator(
+        _dataset_gen,
+        output_types={'image': tf.uint8, 'label': tf.int64},
+        output_shapes={'image': (32, 32, 3), 'label': ()}
+    )
 
 
-def change_range(dataset, start=(0., 255.), end=(-1., 1.)):
-    dataset['image'] = (dataset['image'] - start[0]) / (start[1] - start[0])
-    dataset['image'] = dataset['image'] * (end[1] - end[0]) + start[0]
-    return dataset
+def split_dataset(dataset, num_labelled, num_validations, num_classes):
+    dataset = dataset.shuffle(buffer_size=10000)
+    counter = [0 for _ in range(num_classes)]
+    labelled = []
+    unlabelled = []
+    validation = []
+    for example in iter(dataset):
+        label = int(example['label'])
+        if counter[label] < (num_labelled / num_classes):
+            labelled.append(example)
+        elif counter[label] < (num_validations / num_classes + num_labelled / num_classes):
+            validation.append(example)
+        else:
+            example['label'] = tf.convert_to_tensor(-1, dtype=tf.int64)
+            unlabelled.append(example)
+        counter[label] += 1
+    labelled = _list_to_tf_dataset(labelled)
+    unlabelled = _list_to_tf_dataset(unlabelled)
+    validation = _list_to_tf_dataset(validation)
+    return labelled, unlabelled, validation
 
 
-def convert_to_one_hot(dataset, num_labels):
-    one_hot = np.zeros(shape=[len(dataset['label']), num_labels])
-    one_hot[np.arange(len(dataset['label'])), dataset['label'].astype(np.int)] = 1
-    dataset['label'] = one_hot
-    return dataset
+def _bytes_feature(value):
+    if isinstance(value, type(tf.constant(0))):
+        value = value.numpy() # BytesList won't unpack a string from an EagerTensor.
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
 
-def split_dataset(split_size, dataset, num_labels):
-    dataset = unison_shuffle(dataset)
-    train_idx = []
-    validation_idxs = []
-    for i in range(num_labels):
-        idxs = np.where(dataset['label'][:, i] == 1)[0]
-        np.random.shuffle(idxs)
-        split_idx = int(split_size / num_labels)
-        train_idx.extend(idxs[:split_idx])
-        validation_idxs.extend(idxs[split_idx:])
-    np.random.shuffle(train_idx)
-    np.random.shuffle(validation_idxs)
-    train = {}
-    validation = {}
-    for key in dataset.keys():
-        train[key] = dataset[key][train_idx]
-        validation[key] = dataset[key][validation_idxs]
-    return train, validation
+def _int64_feature(value):
+    return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
 
 
-def unison_shuffle(dataset):
-    assert len(set([len(dataset[key]) for key in dataset.keys()])) == 1
-    p = np.random.permutation(len(dataset[list(dataset.keys())[0]]))
-    for key in dataset.keys():
-        dataset[key] = dataset[key][p]
-    return dataset
+def serialize_example(image, label):
+    image = tf.image.encode_png(image)
+    feature = {
+        'image': _bytes_feature(image),
+        'label': _int64_feature(label)
+    }
+    example = tf.train.Example(features=tf.train.Features(feature=feature))
+    return example.SerializeToString()
+
+
+def tf_serialize_example(example):
+    tf_string = tf.py_function(
+        serialize_example,
+        (example['image'], example['label']),
+        tf.string
+    )
+    return tf.reshape(tf_string, ())
+
+
+def export_tfrecord_dataset(dataset_path, dataset):
+    serialized_dataset = dataset.map(tf_serialize_example)
+    writer = tf.data.experimental.TFRecordWriter(dataset_path)
+    writer.write(serialized_dataset)
+
+
+def _parse_function(example):
+    feature_description = {
+        'image': tf.io.FixedLenFeature([], tf.string),
+        'label': tf.io.FixedLenFeature([], tf.int64)
+    }
+    return tf.io.parse_single_example(example, feature_description)
+
+
+def load_tfrecord_dataset(dataset_path):
+    raw_dataset = tf.data.TFRecordDataset([dataset_path])
+    parsed_dataset = raw_dataset.map(_parse_function)
+    return parsed_dataset
+
+
+def normalize_image(image, start=(0., 255.), end=(-1., 1.)):
+    image = (image - start[0]) / (start[1] - start[0])
+    image = image * (end[1] - end[0]) + end[0]
+    return image
+
+
+def process_parsed_dataset(dataset, num_classes):
+    images = []
+    labels = []
+    for example in iter(dataset):
+        decoded_image = tf.io.decode_png(example['image'], channels=3, dtype=tf.uint8)
+        normalized_image = normalize_image(tf.cast(decoded_image, dtype=tf.float32))
+        images.append(normalized_image)
+        one_hot_label = tf.one_hot(example['label'], depth=num_classes, dtype=tf.float32)
+        labels.append(one_hot_label)
+    return tf.data.Dataset.from_tensor_slices({
+        'image': images,
+        'label': labels
+    })
+
+
+def fetch_dataset(args, log_dir):
+    dataset_path = f'{log_dir}/datasets'
+    if not os.path.exists(dataset_path):
+        os.makedirs(dataset_path)
+    num_classes = 100 if args['dataset'] == 'cifar100' else 10
+
+    # creating datasets
+    if any([not os.path.exists(f'{dataset_path}/{split}.tfrecord') for split in ['trainX', 'trainU', 'validation', 'test']]):
+        train, test = download_dataset(dataset_name=args['dataset'])
+
+        trainX, trainU, validation = split_dataset(train, args['labelled_examples'], args['validation_examples'],
+                                                   num_classes)
+
+        for name, dataset in [('trainX', trainX), ('trainU', trainU), ('validation', validation), ('test', test)]:
+            export_tfrecord_dataset(f'{dataset_path}/{name}.tfrecord', dataset)
+
+        # saving datasets as .tfrecord files
+        export_tfrecord_dataset(f'{dataset_path}/trainX.tfrecord', trainX)
+        export_tfrecord_dataset(f'{dataset_path}/trainU.tfrecord', trainU)
+        export_tfrecord_dataset(f'{dataset_path}/validation.tfrecord', validation)
+        export_tfrecord_dataset(f'{dataset_path}/test.tfrecord', test)
+
+    # loading datasets from .tfrecord files
+    parsed_trainX = load_tfrecord_dataset(f'{dataset_path}/trainX.tfrecord')
+    parsed_trainU = load_tfrecord_dataset(f'{dataset_path}/trainU.tfrecord')
+    parsed_validation = load_tfrecord_dataset(f'{dataset_path}/validation.tfrecord')
+    parsed_test = load_tfrecord_dataset(f'{dataset_path}/test.tfrecord')
+
+    trainX = process_parsed_dataset(parsed_trainX, num_classes)
+    trainU = process_parsed_dataset(parsed_trainU, num_classes)
+    validation = process_parsed_dataset(parsed_validation, num_classes)
+    test = process_parsed_dataset(parsed_test, num_classes)
+
+    return trainX, trainU, validation, test, num_classes
