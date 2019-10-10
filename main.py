@@ -1,8 +1,7 @@
 import argparse
-import fnmatch
 import os
-import time
 
+import numpy as np
 import tensorflow as tf
 import tqdm
 import yaml
@@ -81,11 +80,13 @@ def main():
     ema_ckpt = tf.train.Checkpoint(step=tf.Variable(0), net=ema_model)
     ema_manager = tf.train.CheckpointManager(ema_ckpt, f'{ckpt_dir}/ema', max_to_keep=3)
 
-    model.summary()
     if args['resume']:
         model_ckpt.restore(manager.latest_checkpoint)
         ema_ckpt.restore(manager.latest_checkpoint)
-        print(f'Restored from {manager.latest_checkpoint} and {ema_manager.latest_checkpoint}')
+        model_ckpt.step.assign_add(1)
+        ema_ckpt.step.assign_add(1)
+        start_epoch = int(model_ckpt.step)
+        print(f'Restored @ epoch {start_epoch} from {manager.latest_checkpoint} and {ema_manager.latest_checkpoint}')
 
     train_writer = None
     if args['tensorboard']:
@@ -93,16 +94,19 @@ def main():
         val_writer = tf.summary.create_file_writer(f'{log_path}/validation')
         test_writer = tf.summary.create_file_writer(f'{log_path}/test')
 
+    # assigning args used in functions wrapped with tf.function to tf.constant/tf.Variable to avoid memory leaks
+    args['T'] = tf.constant(args['T'])
+    args['beta'] = tf.Variable(0., shape=())
     for epoch in range(start_epoch, args['epochs']):
         xe_loss, l2u_loss, total_loss, accuracy = train(datasetX, datasetU, model, ema_model, optimizer, epoch, args)
         val_xe_loss, val_accuracy = validate(val_dataset, ema_model, epoch, args, split='Validation')
         test_xe_loss, test_accuracy = validate(test_dataset, ema_model, epoch, args, split='Test')
 
-        if epoch % 16 == 0:
-            model_save_path = manager.save(checkpoint_number=epoch)
-            ema_save_path = ema_manager.save(checkpoint_number=epoch)
-            print(f'Saved model checkpoint for epoch {model_ckpt.step} @ {model_save_path}')
-            print(f'Saved ema checkpoint for epoch {ema_ckpt.step} @ {ema_save_path}')
+        if (epoch - start_epoch) % 16 == 0:
+            model_save_path = manager.save(checkpoint_number=int(model_ckpt.step))
+            ema_save_path = ema_manager.save(checkpoint_number=int(ema_ckpt.step))
+            print(f'Saved model checkpoint for epoch {int(model_ckpt.step)} @ {model_save_path}')
+            print(f'Saved ema checkpoint for epoch {int(ema_ckpt.step)} @ {ema_save_path}')
 
         model_ckpt.step.assign_add(1)
         ema_ckpt.step.assign_add(1)
@@ -151,9 +155,10 @@ def train(datasetX, datasetU, model, ema_model, optimizer, epoch, args):
             iteratorU = iter(shuffle_and_batch(datasetU))
             batchU = next(iteratorU)
 
+        args['beta'].assign(np.random.beta(args['alpha'], args['alpha']))
         with tf.GradientTape() as tape:
             # run mixmatch
-            XU, XUy = mixmatch(model, batchX['image'], batchX['label'], batchU['image'], args['T'], args['K'], args['alpha'])
+            XU, XUy = mixmatch(model, batchX['image'], batchX['label'], batchU['image'], args['T'], args['K'], args['beta'])
             logits = [model(XU[0])]
             for batch in XU[1:]:
                 logits.append(model(batch))

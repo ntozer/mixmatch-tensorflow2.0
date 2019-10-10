@@ -56,7 +56,7 @@ def interleave(xy, batch):
     return [tf.concat(v, axis=0) for v in xy]
 
 
-def mixmatch(model, x, y, u, T=0.5, K=2, alpha=0.75):
+def mixmatch(model, x, y, u, T, K, beta):
     batch_size = x.shape[0]
     x_aug = augment(x)
     u_aug = [None for _ in range(K)]
@@ -71,7 +71,7 @@ def mixmatch(model, x, y, u, T=0.5, K=2, alpha=0.75):
     indices = tf.random.shuffle(tf.range(XU.shape[0]))
     W = tf.gather(XU, indices)
     Wy = tf.gather(XUy, indices)
-    XU, XUy = mixup(XU, W, XUy, Wy, beta=tf.constant(np.random.beta(alpha, alpha)))
+    XU, XUy = mixup(XU, W, XUy, Wy, beta=beta)
     XU = tf.split(XU, K + 1, axis=0)
     XU = interleave(XU, batch_size)
     return XU, XUy

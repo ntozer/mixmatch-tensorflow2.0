@@ -3,7 +3,7 @@ epochs: 2048
 val_iteration: 1024
 batch_size: 64
 learning_rate: 0.002
-labelled_examples: 250
+labelled_examples: 1000
 validation_examples: 5000
 T: 0.5
 K: 2

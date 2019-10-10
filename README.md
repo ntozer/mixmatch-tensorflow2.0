@@ -1,21 +1,21 @@
-## MixMatch
-This is an implementation of the research paper ["MixMatch: A Holistic Approach to Semi-Supervised Learning"](https://arxiv.org/abs/1905.02249) in Python and Tensorflow 2. All reported results from training use the WideResNet 28-2 architecture as described in the paper.
+## mixmatch-tensorflow2.0
+This is an implementation of the research paper [MixMatch: A Holistic Approach to Semi-Supervised Learning](https://arxiv.org/abs/1905.02249) in Python and TensorFlow 2.0. All reported results from training use the WideResNet 28-2 architecture as described in the paper.
 
 ### Results
 #### CIFAR-10
 |  Implementation/Labels  |     250    |     500    |    1000    |    2000    |    4000    | 
 | ----------------------- |-----------:|-----------:|-----------:|-----------:|-----------:|
 | MixMatch Paper          | 88.92±0.87 | 90.35±0.94 | 92.25±0.32 | 92.97±0.15 | 93.76±0.06 |
-| mixmatch-tensorflow2.0  |            |            |            |            |            |
+| mixmatch-tensorflow2.0  |      88.60 |            |            |            |            |
 
 ### Prerequisites
 pip installs:
 ~~~
-numpy==1.17.2
-pyyaml==5.1.2
-tensorflow==2.0
-tensorflow-datasets==1.2.0
-tqdm==4.36.1
+numpy>=1.17.2
+pyyaml>=5.1.2
+tensorflow>=2.0
+tensorflow-datasets>=1.2.0
+tqdm>=4.36.1
 ~~~
 
 ### Training

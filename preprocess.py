@@ -1,6 +1,5 @@
 import os
 
-import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
@@ -51,14 +50,16 @@ def split_dataset(dataset, num_labelled, num_validations, num_classes):
     validation = []
     for example in iter(dataset):
         label = int(example['label'])
-        if counter[label] < (num_labelled / num_classes):
-            labelled.append(example)
-        elif counter[label] < (num_validations / num_classes + num_labelled / num_classes):
-            validation.append(example)
-        else:
-            example['label'] = tf.convert_to_tensor(-1, dtype=tf.int64)
-            unlabelled.append(example)
         counter[label] += 1
+        if counter[label] <= (num_labelled / num_classes):
+            labelled.append(example)
+            continue
+        elif counter[label] <= (num_validations / num_classes + num_labelled / num_classes):
+            validation.append(example)
+        unlabelled.append({
+            'image': example['image'],
+            'label': tf.convert_to_tensor(-1, dtype=tf.int64)
+        })
     labelled = _list_to_tf_dataset(labelled)
     unlabelled = _list_to_tf_dataset(unlabelled)
     validation = _list_to_tf_dataset(validation)
